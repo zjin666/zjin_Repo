@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Inference: YOLOv8 detection + EfficientNet-B3 / ArcFace classification.
-Replaces the original PaddleOCR baseline.
+Inference pipeline: YOLOv8 detection + EfficientNet-B3 / ArcFace classification.
 """
 import json
 import os
@@ -156,8 +155,8 @@ def main():
     # ------------------------------------------------------------------
     all_results = {}
     for img_idx, image_path in enumerate(image_paths, start=1):
-        if img_idx == 1 or img_idx % 50 == 0:
-            print(f"[{img_idx}/{len(image_paths)}] {image_path.name}")
+        if img_idx % 25 == 0 or img_idx == 1:
+            print(f"[{img_idx}/{len(image_paths)}] {image_path.name}", flush=True)
 
         image_id = image_path.stem
         try:
@@ -171,17 +170,17 @@ def main():
             xyxy = boxes.xyxy.cpu().numpy()
             detections = []
 
-            for i in range(len(xyxy)):
-                x1, y1, x2, y2 = xyxy[i]
-                x, y, w, h = int(round(x1)), int(round(y1)), int(round(x2 - x1)), int(round(y2 - y1))
-                if w <= 0 or h <= 0:
-                    continue
+            # Open image once for all crops
+            with Image.open(image_path) as img:
+                for i in range(len(xyxy)):
+                    x1, y1, x2, y2 = xyxy[i]
+                    x, y, w, h = int(round(x1)), int(round(y1)), int(round(x2 - x1)), int(round(y2 - y1))
+                    if w <= 0 or h <= 0:
+                        continue
 
-                with Image.open(image_path) as img:
                     crop = img.crop((x, y, x + w, y + h))
-
-                char, score = classify_crop(crop, feat_extractor, head_w, idx_to_char)
-                detections.append({
+                    char, score = classify_crop(crop, feat_extractor, head_w, idx_to_char)
+                    detections.append({
                     "bbox": [x, y, w, h],
                     "text": char,
                     "_y": y,

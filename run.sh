@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "Starting official PaddleOCR baseline inference..."
+echo "Starting YOLOv8 + EfficientNet-B3 inference..."
 
 echo "===== Runtime paths ====="
 echo "PWD=$(pwd)"
@@ -90,7 +90,7 @@ try:
         t = torch.zeros(1).cuda()
         print("CUDA tensor test: OK")
 except Exception as exc:
-    print("Paddle import/check failed:", repr(exc))
+    print("PyTorch import/check failed:", repr(exc))
 PY
 echo "===== End GPU diagnostics ====="
 
