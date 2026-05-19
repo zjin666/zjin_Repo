@@ -78,22 +78,17 @@ except Exception as exc:
     print("CUDA driver API check failed:", repr(exc))
 
 try:
-    import paddle
+    import torch
 
-    print("Paddle version:", paddle.__version__)
-    try:
-        print("Paddle compiled with CUDA:", paddle.device.is_compiled_with_cuda())
-    except Exception as exc:
-        print("Paddle CUDA compile check failed:", repr(exc))
-    try:
-        print("Paddle CUDA device count:", paddle.device.cuda.device_count())
-    except Exception as exc:
-        print("Paddle CUDA device count failed:", repr(exc))
-    try:
-        paddle.device.set_device("gpu:0")
-        print("Paddle set_device gpu:0: OK")
-    except Exception as exc:
-        print("Paddle set_device gpu:0 failed:", repr(exc))
+    print("PyTorch version:", torch.__version__)
+    print("CUDA available:", torch.cuda.is_available())
+    if torch.cuda.is_available():
+        print("CUDA version:", torch.version.cuda)
+        print("GPU count:", torch.cuda.device_count())
+        print("GPU name:", torch.cuda.get_device_name(0))
+        # Quick CUDA sanity check
+        t = torch.zeros(1).cuda()
+        print("CUDA tensor test: OK")
 except Exception as exc:
     print("Paddle import/check failed:", repr(exc))
 PY

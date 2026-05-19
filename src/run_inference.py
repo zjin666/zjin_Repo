@@ -1,182 +1,211 @@
 #!/usr/bin/env python3
+"""
+Inference: YOLOv8 detection + EfficientNet-B3 / ArcFace classification.
+Replaces the original PaddleOCR baseline.
+"""
 import json
 import os
 import traceback
 from pathlib import Path
 
-from paddleocr import PaddleOCR
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision.transforms as T
 from PIL import Image
+from ultralytics import YOLO
 
 
 INPUT_DIR = Path(os.getenv("INPUT_DIR", "/saisdata/13/eval/images"))
 OUTPUT_FILE = Path(os.getenv("OUTPUT_FILE", "/saisresult/prediction.json"))
-REQUEST_USE_GPU = os.getenv("USE_GPU", "1") not in {"0", "false", "False", "no", "NO"}
-USE_ANGLE_CLS = os.getenv("USE_ANGLE_CLS", "1") not in {"0", "false", "False", "no", "NO"}
-LANG = os.getenv("PADDLEOCR_LANG", "ch")
-MIN_SCORE = float(os.getenv("MIN_SCORE", "0.0"))
+MODEL_DIR = Path(os.getenv("MODEL_DIR", "/app/models"))
+
+YOLO_CONF = float(os.getenv("YOLO_CONF", "0.25"))
+YOLO_IOU = float(os.getenv("YOLO_IOU", "0.7"))
+YOLO_IMGSZ = int(os.getenv("YOLO_IMGSZ", "1280"))
+
+CLASSIFY_IMGSZ = 128
+FEAT_DIM = 512
 
 
+# ---------------------------------------------------------------------------
+# Model building
+# ---------------------------------------------------------------------------
+def build_classifier(backbone_state_dict, head_weight, device):
+    """Build EfficientNet-B3 feature extractor + load ArcFace head weights."""
+    import torchvision.models as models
+
+    enet = models.efficientnet_b3(weights=None)
+    backbone_out = enet.classifier[-1].in_features  # 1536
+
+    backbone = nn.Sequential()
+    backbone.add_module("features", enet.features)
+    backbone.add_module("avgpool", enet.avgpool)
+    backbone.add_module("flatten", nn.Flatten())
+
+    feat_extractor = nn.Sequential()
+    feat_extractor.add_module("backbone", backbone)
+    feat_extractor.add_module("bn1", nn.BatchNorm1d(backbone_out))
+    feat_extractor.add_module("dropout", nn.Dropout(0.2))
+    feat_extractor.add_module("fc", nn.Linear(backbone_out, FEAT_DIM))
+    feat_extractor.add_module("bn2", nn.BatchNorm1d(FEAT_DIM))
+
+    feat_extractor.load_state_dict(backbone_state_dict)
+    feat_extractor.to(device)
+    feat_extractor.eval()
+
+    head_w = head_weight.to(device)  # (num_classes, feat_dim)
+    return feat_extractor, head_w
+
+
+# ---------------------------------------------------------------------------
+# Image discovery
+# ---------------------------------------------------------------------------
 def find_images():
     suffixes = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
-
     if INPUT_DIR.exists():
-        return sorted(path for path in INPUT_DIR.iterdir() if path.suffix.lower() in suffixes)
-
-    fallback_root = Path("/saisdata")
-    if fallback_root.exists():
-        return sorted(path for path in fallback_root.rglob("*") if path.suffix.lower() in suffixes)
-
+        return sorted(p for p in INPUT_DIR.iterdir() if p.suffix.lower() in suffixes)
+    fallback = Path("/saisdata")
+    if fallback.exists():
+        return sorted(p for p in fallback.rglob("*") if p.suffix.lower() in suffixes)
     return []
 
 
-def normalize_ocr_lines(result):
-    if not result:
-        return []
-
-    if isinstance(result, list) and len(result) == 1:
-        return result[0] or []
-
-    return result if isinstance(result, list) else []
+classify_transform = T.Compose([
+    T.Resize((CLASSIFY_IMGSZ, CLASSIFY_IMGSZ)),
+    T.ToTensor(),
+    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
 
 
-def detect_use_gpu():
-    if not REQUEST_USE_GPU:
-        print("GPU disabled by USE_GPU=0")
-        return False
+# ---------------------------------------------------------------------------
+# Classification
+# ---------------------------------------------------------------------------
+def classify_crop(crop_pil, feat_extractor, head_w, idx_to_char):
+    """Classify a single character crop. Returns (character, confidence)."""
+    img_t = classify_transform(crop_pil).unsqueeze(0)
+    img_t = img_t.to(next(feat_extractor.parameters()).device)
 
-    try:
-        import paddle
+    with torch.no_grad():
+        feat = feat_extractor(img_t)
+        feat = F.normalize(feat)
+        w_norm = F.normalize(head_w)
+        logits = feat @ w_norm.T
+        scores, preds = logits[0].topk(1)
 
-        is_cuda_build = False
-        for checker in (
-            lambda: paddle.device.is_compiled_with_cuda(),
-            lambda: paddle.is_compiled_with_cuda(),
-        ):
-            try:
-                is_cuda_build = bool(checker())
-                break
-            except Exception:
-                continue
-
-        try:
-            gpu_count = int(paddle.device.cuda.device_count())
-        except Exception:
-            gpu_count = 0
-
-        print(f"Paddle CUDA build: {is_cuda_build}")
-        print(f"Visible CUDA devices: {gpu_count}")
-
-        if is_cuda_build and gpu_count > 0:
-            return True
-    except Exception as exc:
-        print(f"Warning: failed to check CUDA devices: {exc}")
-
-    print("GPU requested but no usable CUDA device was found; falling back to CPU.")
-    return False
+    class_idx = preds[0].item()
+    char = idx_to_char.get(str(class_idx), str(class_idx))
+    return char, float(scores[0])
 
 
-def polygon_to_bbox(points, image_width, image_height):
-    x_values = [float(point[0]) for point in points]
-    y_values = [float(point[1]) for point in points]
-
-    x1 = max(0, min(image_width - 1, int(round(min(x_values)))))
-    y1 = max(0, min(image_height - 1, int(round(min(y_values)))))
-    x2 = max(0, min(image_width, int(round(max(x_values)))))
-    y2 = max(0, min(image_height, int(round(max(y_values)))))
-
-    return [x1, y1, max(0, x2 - x1), max(0, y2 - y1)]
-
-
-def infer_one(ocr, image_path):
-    with Image.open(image_path) as img:
-        image_width, image_height = img.size
-
-    raw_result = ocr.ocr(str(image_path), cls=USE_ANGLE_CLS)
-    lines = normalize_ocr_lines(raw_result)
-
-    detections = []
-    for line in lines:
-        if not line or len(line) < 2:
-            continue
-
-        polygon = line[0]
-        text_score = line[1]
-        text = text_score[0] if text_score else ""
-        score = float(text_score[1]) if text_score and len(text_score) > 1 else 0.0
-
-        if not text or score < MIN_SCORE:
-            continue
-
-        bbox = polygon_to_bbox(polygon, image_width, image_height)
-        if bbox[2] <= 0 or bbox[3] <= 0:
-            continue
-
-        detections.append({
-            "bbox": [int(v) for v in bbox],
-            "text": str(text),
-        })
-
-    detections.sort(key=lambda item: (item["bbox"][1], item["bbox"][0]))
-    return detections
-
-
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main():
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
 
+    # ------------------------------------------------------------------
+    # Label mappings
+    # ------------------------------------------------------------------
+    with open(MODEL_DIR / "label_mapping.json") as f:
+        label_mapping = json.load(f)
+    with open(MODEL_DIR / "ID_to_chinese.json") as f:
+        id_to_chinese = json.load(f)
+
+    idx_to_char = {}
+    for idx_str, folder_id in label_mapping.items():
+        idx_to_char[idx_str] = id_to_chinese.get(folder_id, folder_id)
+    print(f"Loaded mapping: {len(idx_to_char)} classes")
+
+    # ------------------------------------------------------------------
+    # YOLO detector
+    # ------------------------------------------------------------------
+    yolo_path = MODEL_DIR / "yolo_detector.pt"
+    print(f"Loading YOLO from {yolo_path} ...")
+    detector = YOLO(str(yolo_path))
+
+    # ------------------------------------------------------------------
+    # Classifier
+    # ------------------------------------------------------------------
+    backbone_sd = torch.load(MODEL_DIR / "backbone.pth", map_location="cpu")
+    ckpt = torch.load(MODEL_DIR / "checkpoint.pth", map_location="cpu")
+    head_weight = ckpt["head_state_dict"]["weight"]
+    print(f"Classes: {head_weight.shape[0]}  |  Feat dim: {head_weight.shape[1]}")
+
+    feat_extractor, head_w = build_classifier(backbone_sd, head_weight, device)
+    print("Classifier loaded.")
+
+    # ------------------------------------------------------------------
+    # Find images
+    # ------------------------------------------------------------------
     image_paths = find_images()
-    print(f"Input directory: {INPUT_DIR}")
+    print(f"\nInput directory: {INPUT_DIR}")
     print(f"Images found: {len(image_paths)}")
-    use_gpu = detect_use_gpu()
-    print(f"Use GPU requested: {REQUEST_USE_GPU}")
-    print(f"Use GPU actual: {use_gpu}")
-    print(f"Use angle classifier: {USE_ANGLE_CLS}")
-    print(f"Language: {LANG}")
-    print(f"Min score: {MIN_SCORE}")
 
-    results = {}
     if not image_paths:
-        print("No images found; writing an empty prediction file.")
         with OUTPUT_FILE.open("w", encoding="utf-8") as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
-        print(f"Saved: {OUTPUT_FILE}")
+            json.dump({}, f, ensure_ascii=False, indent=2)
+        print(f"No images. Saved empty: {OUTPUT_FILE}")
         return
 
-    try:
-        ocr = PaddleOCR(
-            use_angle_cls=USE_ANGLE_CLS,
-            lang=LANG,
-            use_gpu=use_gpu,
-            show_log=False,
-        )
-    except Exception:
-        if not use_gpu:
-            raise
-        print("Warning: failed to initialize PaddleOCR with GPU; retrying on CPU.")
-        traceback.print_exc()
-        use_gpu = False
-        ocr = PaddleOCR(
-            use_angle_cls=USE_ANGLE_CLS,
-            lang=LANG,
-            use_gpu=False,
-            show_log=False,
-        )
-
-    for index, image_path in enumerate(image_paths, start=1):
-        if index == 1 or index % 50 == 0:
-            print(f"[{index}/{len(image_paths)}] {image_path.name}")
+    # ------------------------------------------------------------------
+    # Process each image
+    # ------------------------------------------------------------------
+    all_results = {}
+    for img_idx, image_path in enumerate(image_paths, start=1):
+        if img_idx == 1 or img_idx % 50 == 0:
+            print(f"[{img_idx}/{len(image_paths)}] {image_path.name}")
 
         image_id = image_path.stem
         try:
-            results[image_id] = infer_one(ocr, image_path)
+            results = detector(str(image_path), conf=YOLO_CONF,
+                               iou=YOLO_IOU, imgsz=YOLO_IMGSZ, verbose=False)
+            boxes = results[0].boxes
+            if boxes is None or len(boxes) == 0:
+                all_results[image_id] = []
+                continue
+
+            xyxy = boxes.xyxy.cpu().numpy()
+            detections = []
+
+            for i in range(len(xyxy)):
+                x1, y1, x2, y2 = xyxy[i]
+                x, y, w, h = int(round(x1)), int(round(y1)), int(round(x2 - x1)), int(round(y2 - y1))
+                if w <= 0 or h <= 0:
+                    continue
+
+                with Image.open(image_path) as img:
+                    crop = img.crop((x, y, x + w, y + h))
+
+                char, score = classify_crop(crop, feat_extractor, head_w, idx_to_char)
+                detections.append({
+                    "bbox": [x, y, w, h],
+                    "text": char,
+                    "_y": y,
+                    "_x": x,
+                })
+
+            detections.sort(key=lambda d: (d["_y"], d["_x"]))
+            all_results[image_id] = [
+                {"bbox": d["bbox"], "text": d["text"]} for d in detections
+            ]
+
         except Exception as exc:
             print(f"Warning: failed to process {image_path}: {exc}")
             traceback.print_exc()
-            results[image_id] = []
+            all_results[image_id] = []
 
+    # ------------------------------------------------------------------
+    # Write output
+    # ------------------------------------------------------------------
     with OUTPUT_FILE.open("w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
+        json.dump(all_results, f, ensure_ascii=False, indent=2)
 
-    print(f"Saved: {OUTPUT_FILE}")
+    total_chars = sum(len(v) for v in all_results.values())
+    print(f"\nSaved: {OUTPUT_FILE}  ({len(all_results)} images, {total_chars} chars)")
 
 
 if __name__ == "__main__":

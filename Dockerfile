@@ -1,5 +1,5 @@
-ARG PADDLE_DOCKER_PLATFORM=linux/amd64
-FROM --platform=${PADDLE_DOCKER_PLATFORM} nvcr.io/nvidia/cuda:12.0.1-cudnn8-runtime-ubuntu22.04
+ARG DOCKER_PLATFORM=linux/amd64
+FROM --platform=${DOCKER_PLATFORM} nvcr.io/nvidia/cuda:12.0.1-cudnn8-runtime-ubuntu22.04
 
 ENV TZ=Asia/Shanghai \
     LANG=C.UTF-8 \
@@ -8,10 +8,11 @@ ENV TZ=Asia/Shanghai \
     PIP_NO_CACHE_DIR=1 \
     PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple \
     PIP_TRUSTED_HOST=mirrors.aliyun.com \
+    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu121 \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64:/usr/local/cuda-12.0/targets/x86_64-linux/lib:/usr/lib/x86_64-linux-gnu:/usr/local/cuda/compat
 
-RUN mkdir -p /app /saisresult
+RUN mkdir -p /app /saisresult /app/models
 
 RUN set -eux; \
     if [ -f /etc/apt/sources.list ]; then \
@@ -37,7 +38,7 @@ RUN set -eux; \
         bash \
         wget \
         ca-certificates \
-        libcublas-12-0 \
+        libomp-dev \
         libgomp1 \
         libglib2.0-0 \
         libgl1 \
@@ -73,18 +74,21 @@ ENV PIP_DEFAULT_TIMEOUT=180 \
 RUN set -eux; \
     python3 -m pip install --upgrade "pip<25" setuptools wheel
 
+# Install PyTorch with CUDA 12.1 support
 RUN set -eux; \
-    python3 -m pip install paddlepaddle-gpu==2.6.1.post120 -f https://www.paddlepaddle.org.cn/whl/linux/cudnnin/stable.html
+    python3 -m pip install --prefer-binary \
+        torch torchvision \
+        --index-url https://download.pytorch.org/whl/cu121
 
+# Install remaining dependencies
 RUN set -eux; \
     python3 -m pip install --prefer-binary -r /app/requirements.txt
 
+# Verify PyTorch + CUDA
 RUN set -eux; \
-    python3 -c "import ctypes, ctypes.util, paddle; [ctypes.CDLL(x) for x in ('libcublas.so', 'libcublasLt.so', 'libcudnn.so')]; print('Paddle version:', paddle.__version__); print('cuDNN library:', ctypes.util.find_library('cudnn'))"
+    python3 -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available()); print('CUDA version:', torch.version.cuda)"
 
-COPY src/warmup_models.py /app/src/warmup_models.py
-RUN python3 /app/src/warmup_models.py
-
+COPY models/ /app/models/
 COPY src/ /app/src/
 COPY run.sh /app/run.sh
 RUN chmod +x /app/run.sh
