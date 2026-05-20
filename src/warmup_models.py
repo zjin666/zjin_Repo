@@ -20,11 +20,11 @@ def main():
     detector = YOLO(str(yolo_path))
     print("YOLO ready.")
 
-    # Load classifier backbone + head
+    # Load classifier backbone + head from checkpoint (same as run_inference.py)
     from run_inference import build_classifier
 
-    backbone_sd = torch.load(MODEL_DIR / "backbone.pth", map_location="cpu")
     ckpt = torch.load(MODEL_DIR / "checkpoint.pth", map_location="cpu")
+    backbone_sd = ckpt["backbone_state_dict"]
     head_weight = ckpt["head_state_dict"]["weight"]
     print(f"Classifier head: {head_weight.shape[0]} classes, {head_weight.shape[1]} dims")
 

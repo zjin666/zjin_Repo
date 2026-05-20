@@ -20,7 +20,7 @@ INPUT_DIR = Path(os.getenv("INPUT_DIR", "/saisdata/13/eval/images"))
 OUTPUT_FILE = Path(os.getenv("OUTPUT_FILE", "/saisresult/prediction.json"))
 MODEL_DIR = Path(os.getenv("MODEL_DIR", "/app/models"))
 
-YOLO_CONF = float(os.getenv("YOLO_CONF", "0.25"))
+YOLO_CONF = float(os.getenv("YOLO_CONF", "0.1"))
 YOLO_IOU = float(os.getenv("YOLO_IOU", "0.7"))
 YOLO_IMGSZ = int(os.getenv("YOLO_IMGSZ", "1280"))
 
@@ -81,8 +81,37 @@ classify_transform = T.Compose([
 # ---------------------------------------------------------------------------
 # Classification
 # ---------------------------------------------------------------------------
+def preprocess_domain(crop_pil):
+    """Preprocess OOD crops to look more like HUST-OBC training data.
+
+    HUST-OBC chars are small (~30-80px), near-binary, high contrast.
+    OOD crops are large (~500-1000px), full grayscale, lower contrast.
+    This function applies adaptive equalization + gentle binarization
+    to bridge the gap.
+    """
+    import cv2
+    import numpy as np
+
+    img = np.array(crop_pil.convert("L"))
+
+    # CLAHE: enhance local contrast (reduces the noisy-rubbing look)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(img)
+
+    # Adaptive thresholding to pull out stroke structure (HUST-OBC is near-binary)
+    binary = cv2.adaptiveThreshold(
+        enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY, 31, 5,
+    )
+
+    # Blend: mostly binary stroke structure + a touch of grayscale detail
+    result = cv2.addWeighted(binary, 0.85, enhanced, 0.15, 0)
+    return Image.fromarray(result).convert("RGB")
+
+
 def classify_crop(crop_pil, feat_extractor, head_w, idx_to_char):
     """Classify a single character crop. Returns (character, confidence)."""
+    crop_pil = preprocess_domain(crop_pil)
     img_t = classify_transform(crop_pil).unsqueeze(0)
     img_t = img_t.to(next(feat_extractor.parameters()).device)
 
@@ -129,8 +158,8 @@ def main():
     # ------------------------------------------------------------------
     # Classifier
     # ------------------------------------------------------------------
-    backbone_sd = torch.load(MODEL_DIR / "backbone.pth", map_location="cpu")
     ckpt = torch.load(MODEL_DIR / "checkpoint.pth", map_location="cpu")
+    backbone_sd = ckpt["backbone_state_dict"]
     head_weight = ckpt["head_state_dict"]["weight"]
     print(f"Classes: {head_weight.shape[0]}  |  Feat dim: {head_weight.shape[1]}")
 
