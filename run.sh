@@ -103,6 +103,9 @@ if [ ! -d "/saisresult" ]; then
   mkdir -p /saisresult
 fi
 
+# Warm up models (load into CUDA cache + smoke test)
+python3 /app/src/warmup_models.py
+
 python3 /app/src/run_inference.py
 
 PREDICTION_FILE="${OUTPUT_FILE:-/saisresult/prediction.json}"

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Pre-load YOLO detector + EfficientNet-B3 classifier into CUDA cache."""
-import json
+import os
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 from ultralytics import YOLO
 
-MODEL_DIR = Path("/app/models")
+MODEL_DIR = Path(os.getenv("MODEL_DIR", "/app/models"))
 
 
 def main():
