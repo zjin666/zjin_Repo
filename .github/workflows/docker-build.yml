@@ -29,8 +29,6 @@ jobs:
           file: ./Dockerfile
           push: true
           provenance: false
-          tags: |
-            crpi-86wzx3aeze710p0x.cn-hangzhou.personal.cr.aliyuncs.com/zjin_1/zjin6_repo:V2
-            crpi-86wzx3aeze710p0x.cn-hangzhou.personal.cr.aliyuncs.com/zjin_1/zjin6_repo:${{ github.sha }}
+          tags: crpi-86wzx3aeze710p0x.cn-hangzhou.personal.cr.aliyuncs.com/zjin_1/zjin6_repo:V2
           cache-from: type=gha
           cache-to: type=gha,mode=max
