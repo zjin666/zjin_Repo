@@ -1,0 +1,35 @@
+name: Build and Push to Aliyun ACR
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Login to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: crpi-86wzx3aeze710p0x.cn-hangzhou.personal.cr.aliyuncs.com
+          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
+          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            crpi-86wzx3aeze710p0x.cn-hangzhou.personal.cr.aliyuncs.com/zjin_1/zjin6_repo:V2
+            crpi-86wzx3aeze710p0x.cn-hangzhou.personal.cr.aliyuncs.com/zjin_1/zjin6_repo:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
