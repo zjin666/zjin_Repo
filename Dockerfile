@@ -1,5 +1,5 @@
 ARG DOCKER_PLATFORM=linux/amd64
-FROM --platform=${DOCKER_PLATFORM} nvcr.io/nvidia/cuda:12.0.1-cudnn8-runtime-ubuntu22.04
+FROM --platform=${DOCKER_PLATFORM} nvcr.io/nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
 
 ENV TZ=Asia/Shanghai \
     LANG=C.UTF-8 \
