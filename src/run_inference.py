@@ -24,7 +24,7 @@ YOLO_CONF = float(os.getenv("YOLO_CONF", "0.1"))
 YOLO_IOU = float(os.getenv("YOLO_IOU", "0.7"))
 YOLO_IMGSZ = int(os.getenv("YOLO_IMGSZ", "1280"))
 
-CLASSIFY_IMGSZ = 128
+CLASSIFY_IMGSZ = 160
 SKIP_PREPROC = os.getenv("SKIP_PREPROC", "0") == "1"
 CLASSIFIER_THRESH = float(os.getenv("CLASSIFIER_THRESH", "0.3"))
 MARGIN_THRESH = float(os.getenv("MARGIN_THRESH", "0.1"))
