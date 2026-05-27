@@ -24,7 +24,7 @@ YOLO_CONF = float(os.getenv("YOLO_CONF", "0.1"))
 YOLO_IOU = float(os.getenv("YOLO_IOU", "0.7"))
 YOLO_IMGSZ = int(os.getenv("YOLO_IMGSZ", "1280"))
 
-CLASSIFY_IMGSZ = 160
+CLASSIFY_IMGSZ = 128
 SKIP_PREPROC = os.getenv("SKIP_PREPROC", "0") == "1"
 CLASSIFIER_THRESH = float(os.getenv("CLASSIFIER_THRESH", "0.3"))
 MARGIN_THRESH = float(os.getenv("MARGIN_THRESH", "0.1"))
@@ -91,8 +91,10 @@ def preprocess_domain(crop_pil):
     """Preprocess character crops for classification.
 
     Modes (set via PREPROC_MODE env var):
-      gentle (default) — mild CLAHE only, preserves grayscale detail
+      gentle (default) — mild CLAHE + gamma, preserves grayscale detail
+      gentle_clean     — bilateral filter denoising + gentle CLAHE + gamma
       original         — aggressive CLAHE + adaptive threshold + binary blend
+      clean            — bilateral filter + CLAHE + blur + Otsu + morph cleanup
       skip             — no preprocessing at all
     """
     import cv2
@@ -125,6 +127,16 @@ def preprocess_domain(crop_pil):
         cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=1)
         cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel, iterations=1)
         return Image.fromarray(cleaned).convert("RGB")
+
+    if PREPROC_MODE == "gentle_clean":
+        # Bilateral filter denoising (from clean) + gentle CLAHE + gamma (from gentle)
+        img = np.array(crop_pil.convert("L"))
+        filtered = cv2.bilateralFilter(img, d=9, sigmaColor=75, sigmaSpace=75)
+        clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(4, 4))
+        enhanced = clahe.apply(filtered)
+        enhanced = (enhanced / 255.0) ** 0.8 * 255
+        result = np.clip(enhanced, 0, 255).astype(np.uint8)
+        return Image.fromarray(result).convert("RGB")
 
     # gentle (default) — CLAHE only, preserves grayscale detail
     img = np.array(crop_pil.convert("L"))
